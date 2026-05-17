@@ -1244,51 +1244,17 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
     )
 
     # Event handlers
-    @style.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    @prompt.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    @width.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    @height.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    @steps.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    @auto_save.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    @seed.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    @model_choice.change(
-        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
-        outputs=[browser_state],
-    )
-    def save_settings(
-        model_choice, prompt, style, width, height, steps, auto_save, seed
-    ):
-        return {
-            "model": model_choice,
-            "prompt": prompt,
-            "style": style,
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "auto_save": auto_save,
-            "seed": seed,
-        }
+    SAVE_INPUTS = [model_choice, prompt, style, width, height, steps, auto_save, seed]
+    SAVE_OUTPUTS = [browser_state]
+
+    def save_settings(*args):
+        return dict(zip(
+            ["model", "prompt", "style", "width", "height", "steps", "auto_save", "seed"],
+            args,
+        ))
+
+    for component in SAVE_INPUTS:
+        component.change(fn=save_settings, inputs=SAVE_INPUTS, outputs=SAVE_OUTPUTS)
 
     model_choice.change(
         fn=update_ui_for_model,
