@@ -394,6 +394,7 @@ def update_lora_strength(strength: float):
             return f"Error updating strength: {str(e)}"
     return "No LoRA loaded"
 
+
 # =============================================================================
 # Generation Helpers (extracted from generate_image)
 # =============================================================================
@@ -419,7 +420,9 @@ def _make_inf_params(height, width, prompt=None, image=None):
     return params
 
 
-def _generate_flux_img2img(pipe, prompt, images, height, width, steps, guidance, generator):
+def _generate_flux_img2img(
+    pipe, prompt, images, height, width, steps, guidance, generator
+):
     """Run Flux pipeline in image-to-image mode with tiling disabled."""
     img_w, img_h = int(width), int(height)
     processed_images = []
@@ -437,7 +440,13 @@ def _generate_flux_img2img(pipe, prompt, images, height, width, steps, guidance,
 
     ref_input = processed_images[0] if len(processed_images) == 1 else processed_images
     params = _make_inf_params(height=img_h, width=img_w, prompt=prompt, image=ref_input)
-    params.update({"num_inference_steps": int(steps), "guidance_scale": float(guidance), "generator": generator})
+    params.update(
+        {
+            "num_inference_steps": int(steps),
+            "guidance_scale": float(guidance),
+            "generator": generator,
+        }
+    )
 
     result_image = pipe(**params).images[0]
 
@@ -450,13 +459,20 @@ def _generate_flux_img2img(pipe, prompt, images, height, width, steps, guidance,
 def _generate_txt2img(pipe, prompt, height, width, steps, guidance, generator):
     """Run any pipeline in text-to-image mode."""
     params = _make_inf_params(height=height, width=width, prompt=prompt)
-    params.update({"num_inference_steps": int(steps), "guidance_scale": float(guidance), "generator": generator})
+    params.update(
+        {
+            "num_inference_steps": int(steps),
+            "guidance_scale": float(guidance),
+            "generator": generator,
+        }
+    )
     return pipe(**params).images[0], "txt2img"
 
 
 def _cleanup_memory():
     """Free GPU/MPS caches and Python garbage collector."""
     import gc
+
     gc.collect()
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
@@ -477,8 +493,12 @@ MODEL_SHORT_NAMES = {
 
 def _format_generation_info(seed, mode, guidance, lora_file, model_short):
     """Build the generation info string shown in the UI."""
-    parts = [f"Seed: {seed}", f"Model: {model_short}", f"Mode: {mode}",
-             f"Device: {current_device}"]
+    parts = [
+        f"Seed: {seed}",
+        f"Model: {model_short}",
+        f"Mode: {mode}",
+        f"Device: {current_device}",
+    ]
 
     if guidance > 0:
         parts.append(f"CFG: {guidance}")
@@ -491,13 +511,18 @@ def _format_generation_info(seed, mode, guidance, lora_file, model_short):
     return " | ".join(parts)
 
 
-def _generate_anima_result(prompt, preset_name, steps, guidance, height, width, auto_save, output_dir):
+def _generate_anima_result(
+    prompt, preset_name, steps, guidance, height, width, auto_save, output_dir
+):
     """Run the Anima AIO Metal pipeline and build result info."""
     preset = get_anima_preset(preset_name)
     result = generate_anima_aio(
         prompt,
-        height=int(height), width=int(width), steps=int(steps),
-        seed=int(0), cfg_scale=float(guidance),
+        height=int(height),
+        width=int(width),
+        steps=int(steps),
+        seed=int(0),
+        cfg_scale=float(guidance),
         cache_mode=preset["cache_mode"],
         output_dir=output_dir if auto_save else None,
     )
@@ -574,15 +599,32 @@ def generate_image(
     mode = "txt2img"
 
     with torch.inference_mode():
-        if current_model in ("flux2-klein-int8", "flux2-klein-sdnq", "flux2-klein-9b-sdnq"):
+        if current_model in (
+            "flux2-klein-int8",
+            "flux2-klein-sdnq",
+            "flux2-klein-9b-sdnq",
+        ):
             has_inputs = input_images is not None and len(input_images) > 0
             image, mode = (
-                _generate_flux_img2img(pipe, prompt, input_images, height, width, steps, guidance, generator)
+                _generate_flux_img2img(
+                    pipe,
+                    prompt,
+                    input_images,
+                    height,
+                    width,
+                    steps,
+                    guidance,
+                    generator,
+                )
                 if has_inputs
-                else _generate_txt2img(pipe, prompt, height, width, steps, guidance, generator)
+                else _generate_txt2img(
+                    pipe, prompt, height, width, steps, guidance, generator
+                )
             )
         else:
-            image, mode = _generate_txt2img(pipe, prompt, height, width, steps, guidance, generator)
+            image, mode = _generate_txt2img(
+                pipe, prompt, height, width, steps, guidance, generator
+            )
 
     print_memory("After generation")
 
@@ -992,9 +1034,9 @@ def update_ui_for_model(model_choice):
         gr.update(visible=is_zimage_full),  # clear_lora_btn
         gr.update(visible=is_anima, value="Balanced"),  # anima_preset
         gr.update(value=guidance_default),  # guidance_scale
-        gr.update(value=height_default),  # height
-        gr.update(value=width_default),  # width
-        gr.update(value=steps_default),  # steps
+        # gr.update(value=height_default),  # height
+        # gr.update(value=width_default),  # width
+        # gr.update(value=steps_default),  # steps
     )
 
 
@@ -1005,6 +1047,19 @@ def update_anima_preset(preset_name):
         gr.update(value=preset["steps"]),
         gr.update(value=ANIMA_DEFAULTS["guidance"]),
     )
+
+
+def default_browser_state():
+    return {
+        "model": "",
+        "style": [],
+        "prompt": "",
+        "width": 512,
+        "height": 512,
+        "auto_save": False,
+        "steps": 4,
+        "seed": -1,
+    }
 
 
 # Get available devices at startup
@@ -1027,11 +1082,18 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
     **Resolutions:** Up to 2048px for txt2img. Image-to-image: 1K (16GB) or 1.5K (32GB+).
     """)
 
+    browser_state = gr.BrowserState(
+        default_browser_state(),
+        storage_key="ultra-fast-image-gen",
+        secret="user-data",
+    )
+
     styles = []
-    with open("styles_integrated.csv", "r") as f:
-        style_reader = csv.reader(f)
-        for row in style_reader:
-            styles.append({"name": row[0], "prompt": row[1]})
+    if os.path.exists("styles_integrated.csv"):
+        with open("styles_integrated.csv", "r") as f:
+            style_reader = csv.reader(f)
+            for row in style_reader:
+                styles.append({"name": row[0], "prompt": row[1]})
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -1053,6 +1115,7 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
                 choices=[(x["name"], x["prompt"]) for x in styles],
                 label="Styles",
                 multiselect=True,
+                visible=len(styles) > 0,
             )
 
             # Image input (FLUX only) - visible by default since FLUX is default
@@ -1181,6 +1244,52 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
     )
 
     # Event handlers
+    @style.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    @prompt.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    @width.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    @height.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    @steps.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    @auto_save.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    @seed.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    @model_choice.change(
+        inputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+        outputs=[browser_state],
+    )
+    def save_settings(
+        model_choice, prompt, style, width, height, steps, auto_save, seed
+    ):
+        return {
+            "model": model_choice,
+            "prompt": prompt,
+            "style": style,
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "auto_save": auto_save,
+            "seed": seed,
+        }
+
     model_choice.change(
         fn=update_ui_for_model,
         inputs=[model_choice],
@@ -1194,9 +1303,9 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
             clear_lora_btn,
             anima_preset,
             guidance_scale,
-            height,
-            width,
-            steps,
+            # height,
+            # width,
+            # steps,
         ],
     )
 
@@ -1295,6 +1404,25 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
         outputs=[storage_display, model_dropdown, storage_status],
     )
 
+    def load_settings(saved_settings):
+        if saved_settings is None:
+            saved_settings = default_browser_state()
+        return (
+            saved_settings["model"],
+            saved_settings["prompt"],
+            saved_settings["style"],
+            saved_settings["width"],
+            saved_settings["height"],
+            saved_settings["steps"],
+            saved_settings["auto_save"],
+            saved_settings["seed"],
+        )
+
+    demo.load(
+        fn=load_settings,
+        inputs=[browser_state],
+        outputs=[model_choice, prompt, style, width, height, steps, auto_save, seed],
+    )
 
 if __name__ == "__main__":
     demo.launch()
