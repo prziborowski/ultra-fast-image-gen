@@ -10,8 +10,10 @@ FLUX.2-klein also supports image-to-image editing!
 """
 
 import os
+
 os.environ["PYTORCH_MPS_FAST_MATH"] = "1"
 
+import csv
 import torch
 import gradio as gr
 from PIL import Image
@@ -33,7 +35,9 @@ from anima_aio import (
     is_anima_model_choice,
 )
 
-DEFAULT_OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "ultra-fast-image-gen")
+DEFAULT_OUTPUT_DIR = os.path.join(
+    os.path.expanduser("~"), "Pictures", "ultra-fast-image-gen"
+)
 
 
 def cleanup_gradio_cache():
@@ -45,12 +49,15 @@ def cleanup_gradio_cache():
         except Exception:
             pass
 
+
 atexit.register(cleanup_gradio_cache)
 
 # Global state
 pipe = None
 current_device = None
-current_model = None  # "zimage-quant", "zimage-full", "flux2-klein-int8", "anima-aio-metal"
+current_model = (
+    None  # "zimage-quant", "zimage-full", "flux2-klein-int8", "anima-aio-metal"
+)
 current_lora_path = None
 
 # Model choices
@@ -79,7 +86,7 @@ def load_zimage_pipeline(device="mps", use_full_model=False):
     """Load Z-Image pipeline (quantized or full)."""
     import sdnq  # Required for quantized model
     from diffusers import ZImagePipeline, FlowMatchEulerDiscreteScheduler
-    
+
     if use_full_model:
         print(f"Loading Z-Image-Turbo (full precision) on {device}...")
         dtype = torch.bfloat16 if device in ["mps", "cuda"] else torch.float32
@@ -122,6 +129,7 @@ def get_memory_usage():
         return torch.cuda.memory_allocated() / 1024**3
     return 0
 
+
 def print_memory(label):
     """Print memory usage with label."""
     mem = get_memory_usage()
@@ -137,22 +145,24 @@ def load_flux2_klein_pipeline(device="mps"):
     from safetensors.torch import load_file
     from huggingface_hub import snapshot_download
     from quantized_flux2 import QuantizedFlux2Transformer2DModel
-    
+
     print(f"Loading FLUX.2-klein-4B (int8 quantized) on {device}...")
     print_memory("Before loading")
-    
+
     model_path = snapshot_download("aydin99/FLUX.2-klein-4B-int8")
-    
+
     print("  Loading int8 transformer...")
     qtransformer = QuantizedFlux2Transformer2DModel.from_pretrained(model_path)
     qtransformer.to(device=device, dtype=torch.bfloat16)
     print_memory("After transformer")
-    
+
     print("  Loading int8 text encoder...")
-    config = AutoConfig.from_pretrained(f"{model_path}/text_encoder", trust_remote_code=True)
+    config = AutoConfig.from_pretrained(
+        f"{model_path}/text_encoder", trust_remote_code=True
+    )
     with init_empty_weights():
         text_encoder = Qwen3ForCausalLM(config)
-    
+
     with open(f"{model_path}/text_encoder/quanto_qmap.json", "r") as f:
         qmap = json.load(f)
     state_dict = load_file(f"{model_path}/text_encoder/model.safetensors")
@@ -160,9 +170,9 @@ def load_flux2_klein_pipeline(device="mps"):
     text_encoder.eval()
     text_encoder.to(device, dtype=torch.bfloat16)
     print_memory("After text encoder")
-    
+
     tokenizer = AutoTokenizer.from_pretrained(f"{model_path}/tokenizer")
-    
+
     print("  Loading VAE and scheduler...")
     pipe = Flux2KleinPipeline.from_pretrained(
         "black-forest-labs/FLUX.2-klein-4B",
@@ -172,13 +182,13 @@ def load_flux2_klein_pipeline(device="mps"):
         torch_dtype=torch.bfloat16,
     )
     print_memory("After VAE/scheduler download")
-    
+
     pipe.transformer = qtransformer._wrapped
     pipe.text_encoder = text_encoder
     pipe.tokenizer = tokenizer
     pipe.to(device)
     print_memory("After pipe.to(device)")
-    
+
     # Memory optimizations
     pipe.enable_attention_slicing()
     if hasattr(pipe, "enable_vae_slicing"):
@@ -188,7 +198,7 @@ def load_flux2_klein_pipeline(device="mps"):
     elif hasattr(getattr(pipe, "vae", None), "enable_tiling"):
         pipe.vae.enable_tiling()
     print_memory("After memory optimizations")
-    
+
     print("  FLUX.2-klein-4B ready!")
     return pipe
 
@@ -197,27 +207,27 @@ def load_flux2_klein_sdnq_pipeline(device="mps"):
     from sdnq import SDNQConfig
     from diffusers import Flux2KleinPipeline
     from transformers import AutoTokenizer
-    
+
     print(f"Loading FLUX.2-klein-4B (4bit SDNQ) on {device}...")
     print_memory("Before loading")
-    
+
     print("  Loading tokenizer from base model (SDNQ model missing vocab files)...")
     tokenizer = AutoTokenizer.from_pretrained(
         "black-forest-labs/FLUX.2-klein-4B",
         subfolder="tokenizer",
         use_fast=False,
     )
-    
+
     pipe = Flux2KleinPipeline.from_pretrained(
         "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
         tokenizer=tokenizer,
         torch_dtype=torch.bfloat16,
     )
     print_memory("After loading")
-    
+
     pipe.to(device)
     print_memory("After pipe.to(device)")
-    
+
     pipe.enable_attention_slicing()
     if hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
@@ -226,7 +236,7 @@ def load_flux2_klein_sdnq_pipeline(device="mps"):
     elif hasattr(getattr(pipe, "vae", None), "enable_tiling"):
         pipe.vae.enable_tiling()
     print_memory("After memory optimizations")
-    
+
     print("  FLUX.2-klein-4B (SDNQ) ready!")
     return pipe
 
@@ -235,27 +245,27 @@ def load_flux2_klein_9b_sdnq_pipeline(device="mps"):
     from sdnq import SDNQConfig
     from diffusers import Flux2KleinPipeline
     from transformers import AutoTokenizer
-    
+
     print(f"Loading FLUX.2-klein-9B (4bit SDNQ) on {device}...")
     print_memory("Before loading")
-    
+
     print("  Loading tokenizer from base model...")
     tokenizer = AutoTokenizer.from_pretrained(
         "black-forest-labs/FLUX.2-klein-9B",
         subfolder="tokenizer",
         use_fast=False,
     )
-    
+
     pipe = Flux2KleinPipeline.from_pretrained(
         "Disty0/FLUX.2-klein-9B-SDNQ-4bit-dynamic-svd-r32",
         tokenizer=tokenizer,
         torch_dtype=torch.bfloat16,
     )
     print_memory("After loading")
-    
+
     pipe.to(device)
     print_memory("After pipe.to(device)")
-    
+
     pipe.enable_attention_slicing()
     if hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
@@ -264,14 +274,14 @@ def load_flux2_klein_9b_sdnq_pipeline(device="mps"):
     elif hasattr(getattr(pipe, "vae", None), "enable_tiling"):
         pipe.vae.enable_tiling()
     print_memory("After memory optimizations")
-    
+
     print("  FLUX.2-klein-9B (SDNQ) ready!")
     return pipe
 
 
 def load_pipeline(model_choice: str, device: str = "mps"):
     global pipe, current_device, current_model, current_lora_path
-    
+
     if is_anima_model_choice(model_choice):
         model_type = ANIMA_MODEL_TYPE
     elif "Quantized" in model_choice:
@@ -301,10 +311,10 @@ def load_pipeline(model_choice: str, device: str = "mps"):
         current_lora_path = None
         print("Using external Anima AIO Metal runner.")
         return None
-    
+
     if pipe is not None and current_device == device and current_model == model_type:
         return pipe
-    
+
     if pipe is not None:
         print(f"Switching from {current_model} to {model_type}...")
         del pipe
@@ -313,7 +323,7 @@ def load_pipeline(model_choice: str, device: str = "mps"):
             torch.cuda.empty_cache()
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
-    
+
     if model_type == "flux2-klein-int8":
         pipe = load_flux2_klein_pipeline(device)
     elif model_type == "flux2-klein-sdnq":
@@ -324,7 +334,7 @@ def load_pipeline(model_choice: str, device: str = "mps"):
         pipe = load_zimage_pipeline(device, use_full_model=True)
     else:
         pipe = load_zimage_pipeline(device, use_full_model=False)
-    
+
     current_device = device
     current_model = model_type
     print(f"Pipeline loaded on {device}! (Model: {model_type})")
@@ -334,33 +344,33 @@ def load_pipeline(model_choice: str, device: str = "mps"):
 def load_lora(lora_file, lora_strength: float, device: str):
     """Load or update LoRA adapter (Z-Image full model only)."""
     global current_lora_path, pipe
-    
+
     if current_model != "zimage-full":
         return "LoRA only supported with Z-Image Full model"
-    
+
     if lora_file is None or lora_file == "":
         if current_lora_path is not None:
             print("Unloading current LoRA...")
             pipe.unload_lora_weights()
             current_lora_path = None
         return "No LoRA loaded"
-    
+
     lora_path = lora_file if isinstance(lora_file, str) else lora_file.name
-    
+
     if not os.path.exists(lora_path):
         return f"LoRA file not found: {lora_path}"
-    
-    if not lora_path.endswith('.safetensors'):
+
+    if not lora_path.endswith(".safetensors"):
         return "Please select a .safetensors file"
-    
+
     if current_lora_path == lora_path:
         pipe.set_adapters(["default"], adapter_weights=[lora_strength])
         return f"Updated LoRA strength to {lora_strength}"
-    
+
     if current_lora_path is not None:
         print(f"Unloading previous LoRA: {current_lora_path}")
         pipe.unload_lora_weights()
-    
+
     try:
         lora_name = os.path.basename(lora_path)
         print(f"Loading LoRA: {lora_path}")
@@ -386,28 +396,37 @@ def update_lora_strength(strength: float):
 
 
 def generate_image(
-    prompt, 
-    height, 
-    width, 
-    steps, 
-    seed, 
-    guidance, 
-    device, 
+    prompt,
+    style,
+    height,
+    width,
+    steps,
+    seed,
+    guidance,
+    device,
     model_choice,
     input_images,
-    lora_file, 
+    lora_file,
     lora_strength,
     anima_preset,
     auto_save,
-    output_dir
+    output_dir,
 ):
     global pipe
-    
+
+    # Update prompt based on selected styles
+    for s in style:
+        if "{prompt}" in s:
+            prompt = s.format(prompt=prompt)
+        else:
+            prompt = s + prompt
+    print(f"Using prompt {prompt}")
+
     if "Z-Image" in model_choice and lora_file is not None and lora_file != "":
         model_choice = "Z-Image Turbo (Full - LoRA support)"
-    
+
     pipe = load_pipeline(model_choice, device)
-    
+
     if seed == -1:
         seed = torch.randint(0, 2**32, (1,)).item()
 
@@ -449,11 +468,15 @@ def generate_image(
         generator = torch.Generator("mps").manual_seed(int(seed))
     else:
         generator = torch.Generator().manual_seed(int(seed))
-    
+
     print_memory("Before generation")
-    
+
     with torch.inference_mode():
-        if current_model in ("flux2-klein-int8", "flux2-klein-sdnq", "flux2-klein-9b-sdnq"):
+        if current_model in (
+            "flux2-klein-int8",
+            "flux2-klein-sdnq",
+            "flux2-klein-9b-sdnq",
+        ):
             images_to_process = None
             if input_images is not None and len(input_images) > 0:
                 img_w, img_h = int(width), int(height)
@@ -465,23 +488,27 @@ def generate_image(
                         resized = resized.convert("RGB")
                     images_to_process.append(resized)
                 print_memory(f"After resizing {len(images_to_process)} image(s)")
-                
+
                 if hasattr(pipe, "vae") and hasattr(pipe.vae, "disable_tiling"):
                     pipe.vae.disable_tiling()
-                
+
                 image = pipe(
                     prompt=prompt,
-                    image=images_to_process if len(images_to_process) > 1 else images_to_process[0],
+                    image=(
+                        images_to_process
+                        if len(images_to_process) > 1
+                        else images_to_process[0]
+                    ),
                     height=img_h,
                     width=img_w,
                     num_inference_steps=int(steps),
                     guidance_scale=float(guidance),
                     generator=generator,
                 ).images[0]
-                
+
                 if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
                     pipe.vae.enable_tiling()
-                
+
                 mode = f"img2img ({len(images_to_process)} ref)"
             else:
                 image = pipe(
@@ -503,11 +530,12 @@ def generate_image(
                 generator=generator,
             ).images[0]
             mode = "txt2img"
-    
+
     print_memory("After generation")
-    
+
     # Force memory cleanup
     import gc
+
     gc.collect()
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
@@ -515,13 +543,13 @@ def generate_image(
     elif torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-    
+
     print_memory("After cache clear")
-    
+
     lora_name = os.path.basename(lora_file) if lora_file else None
     lora_info = f" | LoRA: {lora_name} ({lora_strength})" if lora_name else ""
     cfg_info = f" | CFG: {guidance}" if guidance > 0 else ""
-    
+
     model_short = {
         "zimage-quant": "Z-Image (quant)",
         "zimage-full": "Z-Image (full)",
@@ -529,13 +557,13 @@ def generate_image(
         "flux2-klein-sdnq": "FLUX.2-klein-4B (4bit)",
         "flux2-klein-9b-sdnq": "FLUX.2-klein-9B (4bit)",
     }.get(current_model, current_model)
-    
+
     info = f"Seed: {seed} | Model: {model_short} | Mode: {mode} | Device: {device}{cfg_info}{lora_info}"
-    
+
     if auto_save:
         save_result = save_image(image, output_dir, prompt)
         info += f" | {save_result}"
-    
+
     return image, info
 
 
@@ -552,9 +580,12 @@ def clear_lora():
 # Output/Save Functions
 # =============================================================================
 
+
 def get_output_dir(custom_dir=None):
     """Get output directory, creating if needed."""
-    output_dir = custom_dir.strip() if custom_dir and custom_dir.strip() else DEFAULT_OUTPUT_DIR
+    output_dir = (
+        custom_dir.strip() if custom_dir and custom_dir.strip() else DEFAULT_OUTPUT_DIR
+    )
     output_dir = os.path.expanduser(output_dir)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -565,13 +596,15 @@ def save_image(image, output_dir=None, prompt=""):
     """Save image to output directory."""
     if image is None:
         return "No image to save"
-    
+
     output_dir = get_output_dir(output_dir)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     prompt_slug = ""
     if prompt:
-        prompt_slug = "_" + "".join(c if c.isalnum() else "_" for c in prompt[:30]).strip("_")
-    
+        prompt_slug = "_" + "".join(
+            c if c.isalnum() else "_" for c in prompt[:30]
+        ).strip("_")
+
     filename = f"{timestamp}{prompt_slug}.png"
     filepath = os.path.join(output_dir, filename)
     image.save(filepath, "PNG")
@@ -618,9 +651,9 @@ def format_size(size_bytes):
     """Format bytes to human readable string."""
     if size_bytes < 1024:
         return f"{size_bytes} B"
-    elif size_bytes < 1024 ** 2:
+    elif size_bytes < 1024**2:
         return f"{size_bytes / 1024:.1f} KB"
-    elif size_bytes < 1024 ** 3:
+    elif size_bytes < 1024**3:
         return f"{size_bytes / 1024 ** 2:.1f} MB"
     else:
         return f"{size_bytes / 1024 ** 3:.2f} GB"
@@ -641,39 +674,41 @@ def scan_downloaded_models():
             if os.path.exists(model_path):
                 size = get_dir_size(model_path)
                 total_size += size
-                models.append({
-                    "repo_id": repo_id,
-                    "display_name": display_name,
-                    "cache_name": cache_name,
-                    "path": model_path,
-                    "size": size,
-                    "size_str": format_size(size),
-                })
+                models.append(
+                    {
+                        "repo_id": repo_id,
+                        "display_name": display_name,
+                        "cache_name": cache_name,
+                        "path": model_path,
+                        "size": size,
+                        "size_str": format_size(size),
+                    }
+                )
 
     anima_entry = get_anima_storage_entry()
     if anima_entry is not None:
         total_size += anima_entry["size"]
         models.append(anima_entry)
-    
+
     models.sort(key=lambda x: x["size"], reverse=True)
-    
+
     return models, format_size(total_size)
 
 
 def get_storage_display():
     """Get formatted storage display for Gradio."""
     models, total = scan_downloaded_models()
-    
+
     if not models:
         return "No models downloaded yet. Models will download on first use."
-    
+
     lines = [f"**Total Storage Used: {total}**\n"]
     lines.append("| Model | Size |")
     lines.append("|-------|------|")
-    
+
     for m in models:
         lines.append(f"| {m['display_name']} | {m['size_str']} |")
-    
+
     return "\n".join(lines)
 
 
@@ -689,23 +724,31 @@ def get_model_choices_for_deletion():
 def delete_model(model_selection):
     """Delete a specific model from cache."""
     global pipe, current_device, current_model
-    
+
     if not model_selection:
-        return get_storage_display(), get_model_choices_for_deletion(), "No model selected"
-    
+        return (
+            get_storage_display(),
+            get_model_choices_for_deletion(),
+            "No model selected",
+        )
+
     models, _ = scan_downloaded_models()
-    
+
     target = None
     for m in models:
-        if model_selection.startswith(m['display_name']):
+        if model_selection.startswith(m["display_name"]):
             target = m
             break
-    
+
     if not target:
-        return get_storage_display(), get_model_choices_for_deletion(), f"Model not found: {model_selection}"
-    
+        return (
+            get_storage_display(),
+            get_model_choices_for_deletion(),
+            f"Model not found: {model_selection}",
+        )
+
     # Unload pipeline if it's using this model
-    model_repo = target.get('repo_id', '').lower()
+    model_repo = target.get("repo_id", "").lower()
     if target.get("external") == "anima" and current_model == ANIMA_MODEL_TYPE:
         current_model = None
         current_device = None
@@ -714,13 +757,21 @@ def delete_model(model_selection):
         needs_unload = False
         if target.get("external") == "anima" and current_model == ANIMA_MODEL_TYPE:
             needs_unload = True
-        elif "klein-4b" in model_repo and current_model and "4b" in current_model.lower():
+        elif (
+            "klein-4b" in model_repo and current_model and "4b" in current_model.lower()
+        ):
             needs_unload = True
-        elif "klein-9b" in model_repo and current_model and "9b" in current_model.lower():
+        elif (
+            "klein-9b" in model_repo and current_model and "9b" in current_model.lower()
+        ):
             needs_unload = True
-        elif "z-image" in model_repo.lower() and current_model and "zimage" in current_model.lower():
+        elif (
+            "z-image" in model_repo.lower()
+            and current_model
+            and "zimage" in current_model.lower()
+        ):
             needs_unload = True
-        
+
         if needs_unload:
             del pipe
             pipe = None
@@ -729,30 +780,34 @@ def delete_model(model_selection):
                 torch.cuda.empty_cache()
             if torch.backends.mps.is_available():
                 torch.mps.empty_cache()
-    
+
     try:
         if target.get("external") == "anima":
             delete_anima_model()
         else:
-            shutil.rmtree(target['path'])
+            shutil.rmtree(target["path"])
         msg = f"Deleted: {target['display_name']} ({target['size_str']} freed)"
         print(msg)
     except Exception as e:
         msg = f"Error deleting {target['display_name']}: {str(e)}"
         print(msg)
-    
+
     return get_storage_display(), get_model_choices_for_deletion(), msg
 
 
 def delete_all_models():
     """Delete all downloaded models."""
     global pipe, current_device, current_model, current_lora_path
-    
+
     models, total = scan_downloaded_models()
-    
+
     if not models:
-        return get_storage_display(), get_model_choices_for_deletion(), "No models to delete"
-    
+        return (
+            get_storage_display(),
+            get_model_choices_for_deletion(),
+            "No models to delete",
+        )
+
     if pipe is not None:
         del pipe
         pipe = None
@@ -763,30 +818,32 @@ def delete_all_models():
             torch.cuda.empty_cache()
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
-    
+
     deleted = []
     errors = []
-    
+
     for m in models:
         try:
             if m.get("external") == "anima":
                 delete_anima_model()
             else:
-                shutil.rmtree(m['path'])
-            deleted.append(m['display_name'])
+                shutil.rmtree(m["path"])
+            deleted.append(m["display_name"])
         except Exception as e:
             errors.append(f"{m['display_name']}: {str(e)}")
-    
+
     if errors:
         msg = f"Deleted {len(deleted)} models. Errors: {'; '.join(errors)}"
     else:
         msg = f"Deleted {len(deleted)} models. {total} freed."
-    
+
     print(msg)
     return get_storage_display(), get_model_choices_for_deletion(), msg
 
 
-def calculate_dimensions_from_ratio(width: int, height: int, target_resolution: str) -> tuple:
+def calculate_dimensions_from_ratio(
+    width: int, height: int, target_resolution: str
+) -> tuple:
     """Calculate output dimensions maintaining aspect ratio for target resolution."""
     if "1536" in target_resolution:
         target_size = 1536
@@ -798,38 +855,52 @@ def calculate_dimensions_from_ratio(width: int, height: int, target_resolution: 
         target_size = 512
     else:
         target_size = 1024
-    
+
     aspect_ratio = width / height
-    
+
     if aspect_ratio >= 1:
         new_width = target_size
         new_height = int(target_size / aspect_ratio)
     else:
         new_height = target_size
         new_width = int(target_size * aspect_ratio)
-    
+
     new_width = (new_width // 64) * 64
     new_height = (new_height // 64) * 64
-    
+
     new_width = max(256, min(2048, new_width))
     new_height = max(256, min(2048, new_height))
-    
+
     return new_width, new_height
 
 
 def on_image_upload(images, current_preset):
     if images is None or len(images) == 0:
-        return gr.update(visible=True), gr.update(visible=True), gr.update(visible=False, value="~1024px")
-    
+        return (
+            gr.update(visible=True),
+            gr.update(visible=True),
+            gr.update(visible=False, value="~1024px"),
+        )
+
     try:
         first_image = images[0][0] if isinstance(images[0], tuple) else images[0]
         img_width, img_height = first_image.size
     except Exception:
-        return gr.update(visible=True), gr.update(visible=True), gr.update(visible=False, value="~1024px")
-    
-    preset = current_preset if current_preset in ["~512px", "~1024px", "~1280px", "~1536px (32GB+)"] else "~1024px"
-    new_width, new_height = calculate_dimensions_from_ratio(img_width, img_height, preset)
-    
+        return (
+            gr.update(visible=True),
+            gr.update(visible=True),
+            gr.update(visible=False, value="~1024px"),
+        )
+
+    preset = (
+        current_preset
+        if current_preset in ["~512px", "~1024px", "~1280px", "~1536px (32GB+)"]
+        else "~1024px"
+    )
+    new_width, new_height = calculate_dimensions_from_ratio(
+        img_width, img_height, preset
+    )
+
     return (
         gr.update(visible=False, value=new_width),
         gr.update(visible=False, value=new_height),
@@ -840,11 +911,13 @@ def on_image_upload(images, current_preset):
 def on_resolution_preset_change(preset, images):
     if images is None or len(images) == 0:
         return gr.update(), gr.update()
-    
+
     first_image = images[0][0] if isinstance(images[0], tuple) else images[0]
     img_width, img_height = first_image.size
-    new_width, new_height = calculate_dimensions_from_ratio(img_width, img_height, preset)
-    
+    new_width, new_height = calculate_dimensions_from_ratio(
+        img_width, img_height, preset
+    )
+
     return gr.update(value=new_width), gr.update(value=new_height)
 
 
@@ -853,7 +926,7 @@ def update_ui_for_model(model_choice):
     is_flux = "FLUX" in model_choice
     is_zimage_full = "Full" in model_choice
     is_anima = is_anima_model_choice(model_choice)
-    
+
     if is_anima:
         guidance_default = ANIMA_DEFAULTS["guidance"]
         height_default = ANIMA_DEFAULTS["height"]
@@ -864,7 +937,7 @@ def update_ui_for_model(model_choice):
         height_default = 512
         width_default = 512
         steps_default = 4
-    
+
     return (
         gr.update(visible=is_flux),  # img2img_label
         gr.update(visible=is_flux),  # input_image
@@ -910,6 +983,12 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
     **Resolutions:** Up to 2048px for txt2img. Image-to-image: 1K (16GB) or 1.5K (32GB+).
     """)
 
+    styles = []
+    with open("styles_integrated.csv", "r") as f:
+        style_reader = csv.reader(f)
+        for row in style_reader:
+            styles.append({"name": row[0], "prompt": row[1]})
+
     with gr.Row():
         with gr.Column(scale=1):
             # Model selection
@@ -917,17 +996,25 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
                 choices=MODEL_CHOICES,
                 value=MODEL_CHOICES[0],
                 label="Model",
-                info="FLUX.2-klein supports image editing"
+                info="FLUX.2-klein supports image editing",
             )
-            
+
             prompt = gr.Textbox(
                 label="Prompt",
                 placeholder="Describe the image you want to generate...",
                 lines=3,
             )
-            
+
+            style = gr.Dropdown(
+                choices=[(x["name"], x["prompt"]) for x in styles],
+                label="Styles",
+                multiselect=True,
+            )
+
             # Image input (FLUX only) - visible by default since FLUX is default
-            img2img_label = gr.Markdown("### Image Input (FLUX.2-klein only - up to 6 images)", visible=True)
+            img2img_label = gr.Markdown(
+                "### Image Input (FLUX.2-klein only - up to 6 images)", visible=True
+            )
             input_images = gr.Gallery(
                 label="Input Images (optional - for image-to-image)",
                 type="pil",
@@ -944,7 +1031,7 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
                 info="Maintains your image's aspect ratio",
                 visible=False,
             )
-            
+
             with gr.Row():
                 height = gr.Slider(256, 2048, value=512, step=64, label="Height")
                 width = gr.Slider(256, 2048, value=512, step=64, label="Width")
@@ -963,9 +1050,12 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
 
             with gr.Row():
                 guidance_scale = gr.Slider(
-                    0.0, 10.0, value=3.5, step=0.5,
+                    0.0,
+                    10.0,
+                    value=3.5,
+                    step=0.5,
                     label="Guidance Scale (CFG)",
-                    info="FLUX: 3.5 recommended, Z-Image: 0"
+                    info="FLUX: 3.5 recommended, Z-Image: 0",
                 )
 
             with gr.Row():
@@ -973,11 +1063,13 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
                     choices=available_devices,
                     value=default_device,
                     label="Device",
-                    info="MPS=Mac, CUDA=NVIDIA, CPU=slow"
+                    info="MPS=Mac, CUDA=NVIDIA, CPU=slow",
                 )
 
             # LoRA section (Z-Image Full only) - no Group wrapper for visibility to work
-            lora_label = gr.Markdown("### LoRA Settings (Z-Image Full only)", visible=False)
+            lora_label = gr.Markdown(
+                "### LoRA Settings (Z-Image Full only)", visible=False
+            )
             with gr.Row():
                 lora_file = gr.File(
                     label="LoRA File",
@@ -986,10 +1078,15 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
                     type="filepath",
                     visible=False,
                 )
-                clear_lora_btn = gr.Button("Clear LoRA", scale=0, min_width=100, visible=False)
+                clear_lora_btn = gr.Button(
+                    "Clear LoRA", scale=0, min_width=100, visible=False
+                )
 
             lora_strength = gr.Slider(
-                0.0, 2.0, value=1.0, step=0.05,
+                0.0,
+                2.0,
+                value=1.0,
+                step=0.05,
                 label="LoRA Strength",
                 info="1.0 = full effect, 0.5 = half effect",
                 visible=False,
@@ -1011,7 +1108,7 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
 
     with gr.Accordion("Storage Management", open=False):
         storage_display = gr.Markdown(value=get_storage_display())
-        
+
         with gr.Row():
             model_dropdown = gr.Dropdown(
                 choices=get_model_choices_for_deletion(),
@@ -1019,17 +1116,19 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
                 scale=3,
             )
             delete_btn = gr.Button("Delete Selected", variant="secondary", scale=1)
-        
+
         with gr.Row():
             refresh_btn = gr.Button("Refresh", scale=1)
             delete_all_btn = gr.Button("Delete ALL Models", variant="stop", scale=1)
-        
+
         storage_status = gr.Textbox(label="Status", interactive=False)
 
     gr.Examples(
         examples=[
             ["A majestic mountain landscape at sunset, dramatic lighting, cinematic"],
-            ["Portrait of a young woman, soft studio lighting, professional photography"],
+            [
+                "Portrait of a young woman, soft studio lighting, professional photography"
+            ],
             ["Cyberpunk city street at night, neon lights, rain reflections"],
             ["A cute cat wearing a tiny hat, studio photo, soft lighting"],
             ["Abstract art, vibrant colors, fluid shapes, modern design"],
@@ -1062,47 +1161,60 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
         inputs=[anima_preset],
         outputs=[steps, guidance_scale],
     )
-    
+
     input_images.change(
         fn=on_image_upload,
         inputs=[input_images, resolution_preset],
         outputs=[width, height, resolution_preset],
     )
-    
+
     resolution_preset.change(
         fn=on_resolution_preset_change,
         inputs=[resolution_preset, input_images],
         outputs=[width, height],
     )
-    
+
     generate_btn.click(
         fn=generate_image,
         inputs=[
-            prompt, height, width, steps, seed, guidance_scale, device,
-            model_choice, input_images, lora_file, lora_strength,
-            anima_preset, auto_save, output_dir
+            prompt,
+            style,
+            height,
+            width,
+            steps,
+            seed,
+            guidance_scale,
+            device,
+            model_choice,
+            input_images,
+            lora_file,
+            lora_strength,
+            anima_preset,
+            auto_save,
+            output_dir,
         ],
         outputs=[output_image, seed_info],
     )
-    
+
     def manual_save(image, out_dir, prompt_text):
         if image is None:
             return "No image to save"
         result = save_image(image, out_dir, prompt_text)
         return result
-    
+
     save_btn.click(
         fn=manual_save,
         inputs=[output_image, output_dir, prompt],
         outputs=[save_status],
     )
-    
+
     def open_output_folder(out_dir):
         import subprocess
+
         folder = get_output_dir(out_dir)
         subprocess.run(["open", folder])
         return f"Opened: {folder}"
-    
+
     open_folder_btn.click(
         fn=open_output_folder,
         inputs=[output_dir],
@@ -1119,21 +1231,21 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
         inputs=[lora_strength],
         outputs=[seed_info],
     )
-    
+
     def refresh_storage():
         return get_storage_display(), get_model_choices_for_deletion(), ""
-    
+
     refresh_btn.click(
         fn=refresh_storage,
         outputs=[storage_display, model_dropdown, storage_status],
     )
-    
+
     delete_btn.click(
         fn=delete_model,
         inputs=[model_dropdown],
         outputs=[storage_display, model_dropdown, storage_status],
     )
-    
+
     delete_all_btn.click(
         fn=delete_all_models,
         outputs=[storage_display, model_dropdown, storage_status],
