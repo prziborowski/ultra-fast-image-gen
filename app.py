@@ -394,6 +394,133 @@ def update_lora_strength(strength: float):
             return f"Error updating strength: {str(e)}"
     return "No LoRA loaded"
 
+# =============================================================================
+# Generation Helpers (extracted from generate_image)
+# =============================================================================
+
+
+def _build_generator(device: str, seed: int):
+    """Create a PyTorch Generator on the specified device with the given seed."""
+    if device == "cuda":
+        return torch.Generator("cuda").manual_seed(seed)
+    elif device == "mps":
+        return torch.Generator("mps").manual_seed(seed)
+    else:
+        return torch.Generator().manual_seed(seed)
+
+
+def _make_inf_params(height, width, prompt=None, image=None):
+    """Build kwargs for a pipe() call. Only includes non-None values."""
+    params = {"height": int(height), "width": int(width)}
+    if prompt is not None:
+        params["prompt"] = prompt
+    if image is not None:
+        params["image"] = image
+    return params
+
+
+def _generate_flux_img2img(pipe, prompt, images, height, width, steps, guidance, generator):
+    """Run Flux pipeline in image-to-image mode with tiling disabled."""
+    img_w, img_h = int(width), int(height)
+    processed_images = []
+    for img_data in images[:6]:
+        pil_img = img_data[0] if isinstance(img_data, tuple) else img_data
+        resized = pil_img.copy().resize((img_w, img_h), Image.LANCZOS)
+        if resized.mode != "RGB":
+            resized = resized.convert("RGB")
+        processed_images.append(resized)
+
+    print_memory(f"After resizing {len(processed_images)} image(s)")
+
+    if hasattr(pipe, "vae") and hasattr(pipe.vae, "disable_tiling"):
+        pipe.vae.disable_tiling()
+
+    ref_input = processed_images[0] if len(processed_images) == 1 else processed_images
+    params = _make_inf_params(height=img_h, width=img_w, prompt=prompt, image=ref_input)
+    params.update({"num_inference_steps": int(steps), "guidance_scale": float(guidance), "generator": generator})
+
+    result_image = pipe(**params).images[0]
+
+    if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
+        pipe.vae.enable_tiling()
+
+    return result_image, f"img2img ({len(processed_images)} ref)"
+
+
+def _generate_txt2img(pipe, prompt, height, width, steps, guidance, generator):
+    """Run any pipeline in text-to-image mode."""
+    params = _make_inf_params(height=height, width=width, prompt=prompt)
+    params.update({"num_inference_steps": int(steps), "guidance_scale": float(guidance), "generator": generator})
+    return pipe(**params).images[0], "txt2img"
+
+
+def _cleanup_memory():
+    """Free GPU/MPS caches and Python garbage collector."""
+    import gc
+    gc.collect()
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+        torch.mps.synchronize()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+MODEL_SHORT_NAMES = {
+    "zimage-quant": "Z-Image (quant)",
+    "zimage-full": "Z-Image (full)",
+    "flux2-klein-int8": "FLUX.2-klein-4B (int8)",
+    "flux2-klein-sdnq": "FLUX.2-klein-4B (4bit)",
+    "flux2-klein-9b-sdnq": "FLUX.2-klein-9B (4bit)",
+}
+
+
+def _format_generation_info(seed, mode, guidance, lora_file, model_short):
+    """Build the generation info string shown in the UI."""
+    parts = [f"Seed: {seed}", f"Model: {model_short}", f"Mode: {mode}",
+             f"Device: {current_device}"]
+
+    if guidance > 0:
+        parts.append(f"CFG: {guidance}")
+
+    lora_name = os.path.basename(lora_file) if lora_file else None
+    if lora_name:
+        strength = getattr(_format_generation_info, "_lora_strength", 1.0) or 1.0
+        parts.append(f"LoRA: {lora_name} ({strength})")
+
+    return " | ".join(parts)
+
+
+def _generate_anima_result(prompt, preset_name, steps, guidance, height, width, auto_save, output_dir):
+    """Run the Anima AIO Metal pipeline and build result info."""
+    preset = get_anima_preset(preset_name)
+    result = generate_anima_aio(
+        prompt,
+        height=int(height), width=int(width), steps=int(steps),
+        seed=int(0), cfg_scale=float(guidance),
+        cache_mode=preset["cache_mode"],
+        output_dir=output_dir if auto_save else None,
+    )
+
+    actual_seed = result.get("seed", 0)
+    cfg_info = f" | CFG: {guidance}" if guidance > 0 else ""
+    cache_info = f" | Cache: {result.get('cache_mode', preset['cache_mode'])}"
+    if result.get("spectrum_skipped"):
+        cache_info += f" ({result['spectrum_skipped']} skipped)"
+    timing_parts = []
+    if result.get("generation_time"):
+        timing_parts.append(f" | Gen: {result['generation_time']}")
+    if result.get("wall_time"):
+        timing_parts.append(f" | Wall: {result['wall_time']}")
+    save_info = f" | Saved: {result['path']}" if auto_save else ""
+
+    info = (
+        f"Seed: {actual_seed} | Model: Anima Turbo AIO Q4 (Metal) | "
+        f"Preset: {preset_name or 'Balanced'} | Device: Metal | {int(width)}x{int(height)} | "
+        f"Steps: {int(steps)}{cfg_info}{cache_info}{''.join(timing_parts)}{save_info}"
+    )
+    return result["image"], info
+
 
 # =============================================================================
 # Generation Helpers (extracted from generate_image)
