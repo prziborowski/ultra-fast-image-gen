@@ -1199,10 +1199,11 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
                 visible=False,
             )
 
-            generate_btn = gr.Button("Generate", variant="primary")
             seed_info = gr.Textbox(label="Generation Info", interactive=False)
 
         with gr.Column(scale=1):
+            generate_btn = gr.Button("Generate", variant="primary")
+
             output_image = gr.Image(label="Generated Image", type="pil")
 
     with gr.Accordion("Save Settings", open=False):
@@ -1248,10 +1249,21 @@ with gr.Blocks(title="Ultra Fast Image Gen") as demo:
     SAVE_OUTPUTS = [browser_state]
 
     def save_settings(*args):
-        return dict(zip(
-            ["model", "prompt", "style", "width", "height", "steps", "auto_save", "seed"],
-            args,
-        ))
+        return dict(
+            zip(
+                [
+                    "model",
+                    "prompt",
+                    "style",
+                    "width",
+                    "height",
+                    "steps",
+                    "auto_save",
+                    "seed",
+                ],
+                args,
+            )
+        )
 
     for component in SAVE_INPUTS:
         component.change(fn=save_settings, inputs=SAVE_INPUTS, outputs=SAVE_OUTPUTS)
